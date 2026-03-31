@@ -19,6 +19,31 @@ const glm = new OpenAI({
 
 const SYSTEM_PROMPT = '당신은 친절한 디스코드 챗봇입니다. 한국어로 대화합니다.';
 
+// ─── 세션별 대화 기록 (In-memory) ───
+interface ChatMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+const sessions = new Map<string, ChatMessage[]>();
+const MAX_HISTORY = 20;
+
+function getSession(sessionId: string): ChatMessage[] {
+  let messages = sessions.get(sessionId);
+  if (!messages) {
+    messages = [];
+    sessions.set(sessionId, messages);
+  }
+  return messages;
+}
+
+function addToSession(sessionId: string, role: 'user' | 'assistant', content: string) {
+  const messages = getSession(sessionId);
+  messages.push({ role, content });
+  while (messages.length > MAX_HISTORY * 2) {
+    messages.shift();
+  }
+}
+
 // ─── 디스코드 봇 ───
 let discordReady = false;
 const client = new Client({
@@ -52,7 +77,8 @@ client.on('messageCreate', async (message: Message) => {
     if ('sendTyping' in message.channel) {
       await message.channel.sendTyping();
     }
-    const reply = await askGLM(userMessage);
+    const sessionId = `discord:${message.author.id}`;
+    const reply = await askGLM(userMessage, sessionId);
 
     if (reply.length > 2000) {
       const chunks = reply.match(/.{1,2000}/gs) || [];
@@ -68,17 +94,22 @@ client.on('messageCreate', async (message: Message) => {
   }
 });
 
-// ─── 공통 GLM 호출 함수 ───
-async function askGLM(userMessage: string): Promise<string> {
+// ─── 공통 GLM 호출 함수 (세션 기반) ───
+async function askGLM(userMessage: string, sessionId: string): Promise<string> {
+  addToSession(sessionId, 'user', userMessage);
+  const history = getSession(sessionId);
+
   const response = await glm.chat.completions.create({
     model: 'glm-z1-airx',  // GLM 5.1
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: userMessage },
+      ...history.map(m => ({ role: m.role, content: m.content })),
     ],
     max_tokens: 1024,
   });
-  return response.choices[0]?.message?.content || '응답을 생성하지 못했습니다.';
+  const reply = response.choices[0]?.message?.content || '응답을 생성하지 못했습니다.';
+  addToSession(sessionId, 'assistant', reply);
+  return reply;
 }
 
 // ─── Web API 라우트 ───
@@ -101,8 +132,9 @@ app.post('/api/chat', async (req, res) => {
   }
 
   try {
-    const reply = await askGLM(message);
-    res.json({ reply });
+    const sessionId = req.body.sessionId || 'web:anonymous';
+    const reply = await askGLM(message, sessionId);
+    res.json({ reply, sessionId });
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'GLM API 오류' });
   }

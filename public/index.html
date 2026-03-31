@@ -1197,6 +1197,9 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+// 브라우저 탭마다 고유 세션 ID
+const WEB_SESSION_ID = 'web:' + Math.random().toString(36).slice(2, 10);
+
 async function sendChatMessage() {
   const msg = chatInput.value.trim();
   if (!msg) return;
@@ -1210,7 +1213,7 @@ async function sendChatMessage() {
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: msg }),
+      body: JSON.stringify({ message: msg, sessionId: WEB_SESSION_ID }),
     });
     const data = await res.json();
     hideTyping();
