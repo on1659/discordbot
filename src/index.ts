@@ -4,6 +4,7 @@ import OpenAI from 'openai';
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
+import { Pool } from 'pg';
 
 // ─── Express 웹 서버 ───
 const app = express();
@@ -18,30 +19,54 @@ const glm = new OpenAI({
 });
 
 const SYSTEM_PROMPT = '당신은 친절한 디스코드 챗봇입니다. 한국어로 대화합니다.';
-
-// ─── 세션별 대화 기록 (In-memory) ───
-interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
-}
-const sessions = new Map<string, ChatMessage[]>();
 const MAX_HISTORY = 20;
 
-function getSession(sessionId: string): ChatMessage[] {
-  let messages = sessions.get(sessionId);
-  if (!messages) {
-    messages = [];
-    sessions.set(sessionId, messages);
-  }
-  return messages;
+// ─── PostgreSQL ───
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL?.includes('railway') ? { rejectUnauthorized: false } : false,
+});
+
+async function initDB() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS conversations (
+      id SERIAL PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_conversations_session
+    ON conversations (session_id, created_at)
+  `);
+  console.log('DB initialized');
 }
 
-function addToSession(sessionId: string, role: 'user' | 'assistant', content: string) {
-  const messages = getSession(sessionId);
-  messages.push({ role, content });
-  while (messages.length > MAX_HISTORY * 2) {
-    messages.shift();
-  }
+async function addToSession(sessionId: string, role: 'user' | 'assistant', content: string) {
+  await pool.query(
+    'INSERT INTO conversations (session_id, role, content) VALUES ($1, $2, $3)',
+    [sessionId, role, content]
+  );
+
+  // MAX_HISTORY * 2 초과 시 오래된 것 삭제
+  await pool.query(`
+    DELETE FROM conversations WHERE id IN (
+      SELECT id FROM conversations
+      WHERE session_id = $1
+      ORDER BY created_at DESC
+      OFFSET $2
+    )
+  `, [sessionId, MAX_HISTORY * 2]);
+}
+
+async function getHistory(sessionId: string): Promise<{ role: string; content: string }[]> {
+  const result = await pool.query(
+    'SELECT role, content FROM conversations WHERE session_id = $1 ORDER BY created_at ASC',
+    [sessionId]
+  );
+  return result.rows;
 }
 
 // ─── 디스코드 봇 ───
@@ -96,19 +121,19 @@ client.on('messageCreate', async (message: Message) => {
 
 // ─── 공통 GLM 호출 함수 (세션 기반) ───
 async function askGLM(userMessage: string, sessionId: string): Promise<string> {
-  addToSession(sessionId, 'user', userMessage);
-  const history = getSession(sessionId);
+  await addToSession(sessionId, 'user', userMessage);
+  const history = await getHistory(sessionId);
 
   const response = await glm.chat.completions.create({
     model: 'glm-z1-airx',  // GLM 5.1
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },
-      ...history.map(m => ({ role: m.role, content: m.content })),
+      ...history.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
     ],
     max_tokens: 1024,
   });
   const reply = response.choices[0]?.message?.content || '응답을 생성하지 못했습니다.';
-  addToSession(sessionId, 'assistant', reply);
+  await addToSession(sessionId, 'assistant', reply);
   return reply;
 }
 
@@ -143,13 +168,21 @@ app.post('/api/chat', async (req, res) => {
 // ─── 서버 시작 ───
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, () => {
-  console.log(`Web UI: http://localhost:${PORT}`);
-});
+async function start() {
+  await initDB();
 
-// 디스코드 토큰이 있으면 봇도 시작
-if (process.env.DISCORD_TOKEN && process.env.DISCORD_TOKEN !== 'your_discord_bot_token_here') {
-  client.login(process.env.DISCORD_TOKEN);
-} else {
-  console.log('Discord token not set — bot offline, web UI only mode');
+  app.listen(PORT, () => {
+    console.log(`Web UI: http://localhost:${PORT}`);
+  });
+
+  if (process.env.DISCORD_TOKEN && process.env.DISCORD_TOKEN !== 'your_discord_bot_token_here') {
+    client.login(process.env.DISCORD_TOKEN);
+  } else {
+    console.log('Discord token not set — bot offline, web UI only mode');
+  }
 }
+
+start().catch(err => {
+  console.error('Failed to start:', err);
+  process.exit(1);
+});
