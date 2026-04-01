@@ -125,7 +125,7 @@ async function askGLM(userMessage: string, sessionId: string): Promise<string> {
   const history = await getHistory(sessionId);
 
   const response = await glm.chat.completions.create({
-    model: 'glm-4-plus',
+    model: 'glm-5',
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },
       ...history.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
