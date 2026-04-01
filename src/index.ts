@@ -21,6 +21,15 @@ const glm = new OpenAI({
 const SYSTEM_PROMPT = '당신은 친절한 디스코드 챗봇입니다. 한국어로 대화합니다.';
 const MAX_HISTORY = 20;
 
+// ─── 모델 등급 ───
+const MODEL_TIERS: Record<string, { model: string; label: string }> = {
+  '박사': { model: 'glm-5-turbo', label: '박사 (GLM-5-Turbo)' },
+  '석사': { model: 'glm-5', label: '석사 (GLM-5)' },
+  '고졸': { model: 'glm-4.7-flash', label: '고졸 (GLM-4.7-Flash)' },
+};
+const DEFAULT_TIER = '석사';
+const userTiers = new Map<string, string>(); // userId → tier name
+
 // ─── PostgreSQL ───
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -86,6 +95,29 @@ client.on('ready', () => {
 
 client.on('messageCreate', async (message: Message) => {
   if (message.author.bot) return;
+
+  // !학력 커맨드 — 모델 등급 선택
+  if (message.content.startsWith('!학력')) {
+    const arg = message.content.replace(/^!학력\s*/, '').trim();
+    if (!arg) {
+      const current = userTiers.get(message.author.id) || DEFAULT_TIER;
+      const list = Object.entries(MODEL_TIERS)
+        .map(([name, t]) => `${name === current ? '▸' : '  '} **${name}** — ${t.model}`)
+        .join('\n');
+      await message.reply(
+        `🎓 현재 학력: **${current}**\n\n${list}\n\n변경: \`!학력 박사\` / \`!학력 석사\` / \`!학력 고졸\``
+      );
+      return;
+    }
+    if (MODEL_TIERS[arg]) {
+      userTiers.set(message.author.id, arg);
+      await message.reply(`🎓 학력이 **${MODEL_TIERS[arg]!.label}**로 변경되었습니다!`);
+    } else {
+      await message.reply(`❌ 없는 학력입니다. 선택지: ${Object.keys(MODEL_TIERS).join(' / ')}`);
+    }
+    return;
+  }
+
   if (!message.content.startsWith('!zai') && !message.mentions.has(client.user!)) return;
 
   const userMessage = message.content
@@ -103,7 +135,9 @@ client.on('messageCreate', async (message: Message) => {
       await message.channel.sendTyping();
     }
     const sessionId = `discord:${message.author.id}`;
-    const reply = await askGLM(userMessage, sessionId);
+    const tier = userTiers.get(message.author.id) || DEFAULT_TIER;
+    const model = MODEL_TIERS[tier]!.model;
+    const reply = await askGLM(userMessage, sessionId, model);
 
     if (reply.length > 2000) {
       const chunks = reply.match(/.{1,2000}/gs) || [];
@@ -120,12 +154,12 @@ client.on('messageCreate', async (message: Message) => {
 });
 
 // ─── 공통 GLM 호출 함수 (세션 기반) ───
-async function askGLM(userMessage: string, sessionId: string): Promise<string> {
+async function askGLM(userMessage: string, sessionId: string, model: string = 'glm-5'): Promise<string> {
   await addToSession(sessionId, 'user', userMessage);
   const history = await getHistory(sessionId);
 
   const response = await glm.chat.completions.create({
-    model: 'glm-5',
+    model,
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },
       ...history.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
