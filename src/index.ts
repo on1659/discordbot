@@ -27,7 +27,7 @@ const MODEL_TIERS: Record<string, { model: string; label: string }> = {
   '석사': { model: 'glm-5', label: '석사 (GLM-5)' },
   '고졸': { model: 'glm-4.7-flash', label: '고졸 (GLM-4.7-Flash)' },
 };
-const DEFAULT_TIER = '석사';
+const DEFAULT_TIER = '고졸';
 const userTiers = new Map<string, string>(); // userId → tier name
 
 // ─── PostgreSQL ───
