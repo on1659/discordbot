@@ -153,20 +153,49 @@ client.on('messageCreate', async (message: Message) => {
   }
 });
 
-// ─── 공통 GLM 호출 함수 (세션 기반) ───
+// ─── GLM 요청 큐 (동시 요청 제한 방지) ───
+const requestQueue: Array<{ run: () => Promise<void> }> = [];
+let queueRunning = false;
+
+async function processQueue() {
+  if (queueRunning) return;
+  queueRunning = true;
+  while (requestQueue.length > 0) {
+    const task = requestQueue.shift()!;
+    await task.run();
+  }
+  queueRunning = false;
+}
+
+function enqueue<T>(fn: () => Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    requestQueue.push({
+      run: async () => {
+        try { resolve(await fn()); }
+        catch (e) { reject(e); }
+      },
+    });
+    processQueue();
+  });
+}
+
+// ─── 공통 GLM 호출 함수 (세션 기반, 큐 적용) ───
 async function askGLM(userMessage: string, sessionId: string, model: string = 'glm-5'): Promise<string> {
   await addToSession(sessionId, 'user', userMessage);
   const history = await getHistory(sessionId);
 
-  const response = await glm.chat.completions.create({
-    model,
-    messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
-      ...history.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
-    ],
-    max_tokens: 1024,
+  const reply = await enqueue(async () => {
+    const response = await glm.chat.completions.create({
+      model,
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        ...history.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+      ],
+      max_tokens: 1024,
+    });
+    return response.choices[0]?.message?.content || '응답을 생성하지 못했습니다.';
   });
-  const reply = response.choices[0]?.message?.content || '응답을 생성하지 못했습니다.';
+
   await addToSession(sessionId, 'assistant', reply);
   return reply;
 }
