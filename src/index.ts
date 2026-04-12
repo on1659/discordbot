@@ -118,7 +118,7 @@ client.on('messageCreate', async (message: Message) => {
     return;
   }
 
-  if (!message.content.startsWith('!zai') && !message.mentions.has(client.user!)) return;
+  if (!message.content.startsWith('!zai') && !message.mentions.has(client.user!, { ignoreEveryone: true, ignoreRoles: true, ignoreRepliedUser: true })) return;
 
   const userMessage = message.content
     .replace(/^!zai\s*/, '')
